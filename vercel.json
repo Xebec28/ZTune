@@ -31,9 +31,9 @@
       ]
     }
   ],
+  "$schema": "https://openapi.vercel.sh/vercel.json",
   "functions": {
-    "api/index.ts": {
-      "runtime": "nodejs22.x",
+    "api/**/*.js": {
       "maxDuration": 30
     }
   }
