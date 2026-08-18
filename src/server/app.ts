@@ -6,137 +6,170 @@
 import express, { Express, Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
+import { DEFAULT_TRACKS } from '../data/defaultCatalog';
 
 dotenv.config();
 
-const YOUTUBE_CLIENT_VERSION = '2.20250801.00.00';
 
-type YouTubeVideo = {
+type YouTubeSearchVideo = {
   videoId: string;
   title: string;
   author?: { name?: string };
   seconds?: number;
-  timestamp?: string;
   thumbnail?: string;
   image?: string;
 };
 
-function textFromRuns(value: any): string {
-  if (!value) return '';
-  if (typeof value.simpleText === 'string') return value.simpleText;
-  if (Array.isArray(value.runs)) return value.runs.map((r: any) => r.text || '').join('');
+function parseYouTubeDuration(text?: string): number {
+  if (!text) return 210;
+  const parts = text.split(':').map(Number);
+  if (parts.some(Number.isNaN)) return 210;
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  return 210;
+}
+
+function firstText(node: any): string {
+  if (!node) return '';
+  if (typeof node.simpleText === 'string') return node.simpleText;
+  if (Array.isArray(node.runs)) return node.runs.map((r: any) => r.text || '').join('');
   return '';
 }
 
-function parseDuration(value: string): number {
-  if (!value) return 0;
-  const parts = value.split(':').map(Number);
-  if (parts.some(Number.isNaN)) return 0;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  return parts[0] || 0;
+function collectYouTubeVideos(value: any, out: YouTubeSearchVideo[] = []): YouTubeSearchVideo[] {
+  if (!value || out.length >= 30) return out;
+
+  if (Array.isArray(value)) {
+    for (const item of value) collectYouTubeVideos(item, out);
+    return out;
+  }
+
+  if (typeof value !== 'object') return out;
+
+  const video = value.videoRenderer;
+  if (video?.videoId) {
+    const title = firstText(video.title);
+    const author = firstText(video.ownerText) || firstText(video.longBylineText) || 'Artist';
+    const thumb = Array.isArray(video.thumbnail?.thumbnails)
+      ? video.thumbnail.thumbnails.at(-1)?.url
+      : undefined;
+
+    out.push({
+      videoId: video.videoId,
+      title: title || 'YouTube Music',
+      author: { name: author.replace(/ - Topic$/i, '') || 'Artist' },
+      seconds: parseYouTubeDuration(firstText(video.lengthText)),
+      thumbnail: thumb,
+      image: thumb,
+    });
+    return out;
+  }
+
+  for (const key of Object.keys(value)) {
+    if (key === 'videoRenderer') continue;
+    collectYouTubeVideos(value[key], out);
+    if (out.length >= 30) break;
+  }
+  return out;
 }
 
-async function fetchWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
+async function fetchJsonWithTimeout(url: string, init: RequestInit = {}, timeoutMs = 9000): Promise<any> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, {
+    const response = await fetch(url, {
       ...init,
       signal: controller.signal,
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-        'Accept': '*/*',
-        ...(init.headers || {}),
-      },
     });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return await response.json();
   } finally {
     clearTimeout(timer);
   }
 }
 
-/**
- * YouTube search without yt-search/cheerio.
- * This calls YouTube's public Innertube search endpoint directly, which is
- * substantially friendlier to Vercel's serverless Node runtime.
- */
-async function searchYouTube(query: string): Promise<{ videos: YouTubeVideo[] }> {
-  const response = await fetchWithTimeout(
-    'https://www.youtube.com/youtubei/v1/search?prettyPrint=false',
-    {
-      method: 'POST',
+async function searchYouTube(query: string): Promise<YouTubeSearchVideo[]> {
+  const encoded = encodeURIComponent(query.trim());
+  const url = `https://www.youtube.com/results?search_query=${encoded}`;
+
+  try {
+    const response = await fetch(url, {
       headers: {
-        'Content-Type': 'application/json',
-        'Origin': 'https://www.youtube.com',
-        'Referer': 'https://www.youtube.com/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+        'Accept-Language': 'en-US,en;q=0.9',
+        'Accept': 'text/html,application/xhtml+xml',
       },
-      body: JSON.stringify({
-        context: {
-          client: {
-            clientName: 'WEB',
-            clientVersion: YOUTUBE_CLIENT_VERSION,
-            hl: 'en',
-            gl: 'US',
-          },
-        },
-        query,
-      }),
-    },
-    12000
-  );
+    });
 
-  if (!response.ok) {
-    throw new Error(`YouTube search returned HTTP ${response.status}`);
-  }
+    if (!response.ok) throw new Error(`YouTube search HTTP ${response.status}`);
 
-  const data: any = await response.json();
-  const videos: YouTubeVideo[] = [];
-  const sections =
-    data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+    const html = await response.text();
+    const patterns = [
+      /var ytInitialData = (\{.*?\});<\/script>/s,
+      /ytInitialData"\s*:\s*(\{.*?\})\s*,\s*"ytInitialPlayerResponse"/s,
+      /ytInitialData\s*=\s*(\{.*?\});/s,
+    ];
 
-  for (const section of sections) {
-    const items = section?.itemSectionRenderer?.contents || [];
-    for (const item of items) {
-      const v = item?.videoRenderer;
-      if (!v?.videoId) continue;
-
-      const title = textFromRuns(v.title);
-      const author = textFromRuns(v.ownerText) || textFromRuns(v.longBylineText);
-      const timestamp = textFromRuns(v.lengthText);
-      const thumb =
-        v.thumbnail?.thumbnails?.slice(-1)?.[0]?.url ||
-        `https://i.ytimg.com/vi/${v.videoId}/hqdefault.jpg`;
-
-      videos.push({
-        videoId: v.videoId,
-        title,
-        author: { name: author || 'YouTube' },
-        seconds: parseDuration(timestamp),
-        timestamp,
-        thumbnail: thumb,
-        image: thumb,
-      });
-
-      if (videos.length >= 30) return { videos };
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (!match?.[1]) continue;
+      try {
+        const data = JSON.parse(match[1]);
+        const videos = collectYouTubeVideos(data);
+        if (videos.length) return videos;
+      } catch {
+        // Try the next extraction pattern.
+      }
     }
+  } catch (error: any) {
+    console.warn('YouTube web search failed:', error?.message || error);
   }
 
-  return { videos };
+  return [];
 }
 
-async function getYouTubeVideo(videoId: string): Promise<YouTubeVideo | null> {
-  const url = `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`;
-  const response = await fetchWithTimeout(url, {}, 10000);
-  if (!response.ok) return null;
-  const data: any = await response.json();
-  return {
-    videoId,
-    title: data.title || 'YouTube Audio',
-    author: { name: data.author_name || 'YouTube Creator' },
-    thumbnail: data.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-    image: data.thumbnail_url || `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-    seconds: 210,
-  };
+async function resolveYouTubeVideo(videoId: string): Promise<any | null> {
+  try {
+    const data = await fetchJsonWithTimeout(
+      `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0',
+          'Accept': 'application/json',
+        },
+      },
+      7000
+    );
+
+    return {
+      videoId,
+      title: data.title || 'YouTube Music',
+      author: { name: data.author_name || 'Artist' },
+      thumbnail: data.thumbnail_url,
+      image: data.thumbnail_url,
+      seconds: 210,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function localCatalogSearch(query: string): any[] {
+  const normalized = query.toLowerCase().trim();
+  if (!normalized) return [];
+
+  const terms = normalized.split(/\s+/).filter(Boolean);
+
+  return DEFAULT_TRACKS
+    .map((track: any) => {
+      const haystack = `${track.title} ${track.artist} ${track.album} ${track.genre}`.toLowerCase();
+      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
+      return { track, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 8)
+    .map(({ track }) => ({ ...track }));
 }
 
 // Helper for Gemini AI client initialization (lazy)
@@ -207,43 +240,41 @@ export function createApiApp(): Express {
     res.json({ status: 'ok', service: 'ZTune Desktop Full-Stack Engine', time: new Date().toISOString() });
   });
 
-  // YouTube Music Search API - Provides full-length music videos/audio tracks from YouTube
+  // YouTube Music Search API.
+  // Uses the public YouTube search page instead of yt-search because yt-search
+  // is unreliable inside Vercel serverless functions.
   app.get('/api/search', async (req: Request, res: Response) => {
     try {
-      const rawQuery = String(req.query.q || 'top hits music').trim();
-      
-      let searchResult: any = null;
-      try {
-        searchResult = await searchYouTube(rawQuery + ' audio');
-        if (!searchResult?.videos || searchResult.videos.length === 0) {
-          searchResult = await searchYouTube(rawQuery + ' song');
-        }
-        if (!searchResult?.videos || searchResult.videos.length === 0) {
-          searchResult = await searchYouTube(rawQuery);
-        }
-      } catch (ytsErr) {
-        console.warn('yts search attempt note:', ytsErr);
+      const rawQuery = String(req.query.q || '').trim();
+      if (!rawQuery) return res.json({ tracks: [] });
+
+      // Always search the app's built-in catalog first. This makes the
+      // bundled tracks work even if an external search provider is unavailable.
+      const localTracks = localCatalogSearch(rawQuery);
+      if (localTracks.length > 0) {
+        return res.json({ tracks: localTracks });
       }
 
-      const videos = (searchResult?.videos || []).slice(0, 30);
-      const allVideoIds = videos.map((v: any) => v.videoId).filter(Boolean);
-
-      const tracks = videos.map((v: any) => {
+      const videos = (await searchYouTube(`${rawQuery} audio`)).slice(0, 30);
+      const tracks = videos.map((v: YouTubeSearchVideo, index: number) => {
         const cleanTitle = (v.title || '')
           .replace(/[\(\[\{](Official Music Video|Official Audio|Lyric Video|Audio|MV|HD|4K|Topic)[\)\]\}]/gi, '')
           .trim();
 
         const candidateIds = [
           v.videoId,
-          ...allVideoIds.filter((id: string) => id !== v.videoId).slice(0, 4)
+          ...videos
+            .map((candidate) => candidate.videoId)
+            .filter((id) => id && id !== v.videoId)
+            .slice(0, 4),
         ];
 
         return {
-          id: `yt_${v.videoId}`,
+          id: `yt_${v.videoId || index}`,
           youtubeId: v.videoId,
           candidateIds,
           title: cleanTitle || v.title,
-          artist: v.author?.name?.replace(/ - Topic$/i, '') || 'Artist',
+          artist: v.author?.name || 'Artist',
           album: 'YouTube Music',
           duration: v.seconds || 210,
           artworkUrl: v.thumbnail || v.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80',
@@ -251,57 +282,40 @@ export function createApiApp(): Express {
           genre: 'Music',
           rating: 5,
           isFavorite: false,
-          source: 'YouTube'
+          source: 'YouTube',
         };
       });
 
-      res.json({ tracks });
+      return res.json({ tracks });
     } catch (err: any) {
       console.error('YouTube search error:', err);
-      res.status(500).json({ error: err.message || 'Error searching YouTube', tracks: [] });
+      return res.json({ tracks: [] });
     }
   });
 
-  // Helper endpoint to lookup YouTube video ID for any title & artist
+  // Helper endpoint to lookup YouTube video ID for any title & artist.
   app.get('/api/youtube/find', async (req: Request, res: Response) => {
     try {
       const q = String(req.query.q || '').trim();
       if (!q) return res.status(400).json({ error: 'Query parameter q required' });
 
-      let searchResult: any = null;
-      try {
-        searchResult = await searchYouTube(q + ' audio');
-        if (!searchResult?.videos || searchResult.videos.length === 0) {
-          searchResult = await searchYouTube(q + ' lyrics');
-        }
-        if (!searchResult?.videos || searchResult.videos.length === 0) {
-          searchResult = await searchYouTube(q + ' topic');
-        }
-        if (!searchResult?.videos || searchResult.videos.length === 0) {
-          searchResult = await searchYouTube(q);
-        }
-      } catch (e) {
-        console.warn('yts find error:', e);
-      }
-
-      const videos = searchResult?.videos || [];
+      const videos = await searchYouTube(q);
       const topVideo = videos[0];
 
       if (topVideo) {
-        const candidateIds = videos.slice(0, 8).map((v: any) => v.videoId).filter(Boolean);
-        res.json({
+        return res.json({
           youtubeId: topVideo.videoId,
-          candidateIds,
+          candidateIds: videos.slice(0, 8).map((v) => v.videoId).filter(Boolean),
           title: topVideo.title,
           duration: topVideo.seconds || 210,
-          artworkUrl: topVideo.thumbnail
+          artworkUrl: topVideo.thumbnail,
         });
-      } else {
-        res.status(404).json({ error: 'No video found' });
       }
+
+      return res.status(404).json({ error: 'No video found' });
     } catch (err: any) {
       console.error('YouTube find error:', err);
-      res.status(500).json({ error: err.message });
+      return res.status(404).json({ error: 'No video found' });
     }
   });
 
@@ -326,17 +340,13 @@ export function createApiApp(): Express {
       let videoData: any = null;
 
       if (videoId) {
-        try {
-          videoData = await getYouTubeVideo(videoId);
-        } catch (e) {
-          console.warn('yts direct videoId lookup error:', e);
-        }
+        videoData = await resolveYouTubeVideo(videoId);
       }
 
       if (!videoData) {
-        const searchRes = await searchYouTube(rawInput);
-        if (searchRes.videos && searchRes.videos.length > 0) {
-          videoData = searchRes.videos[0];
+        const searchVideos = await searchYouTube(rawInput);
+        if (searchVideos.length > 0) {
+          videoData = searchVideos[0];
           videoId = videoData.videoId;
         }
       }
@@ -375,45 +385,39 @@ export function createApiApp(): Express {
     }
   });
 
-  // Helper endpoint to stream short audio previews with CORS and Range support.
-  // Buffering the small iTunes preview avoids Node/WebStream compatibility issues
-  // in Vercel serverless functions.
+  // Helper endpoint to stream audio through server proxy with proper CORS and Byte Range support
   app.get('/api/audio/proxy', async (req: Request, res: Response) => {
     try {
       const audioUrl = String(req.query.url || '');
       if (!audioUrl) return res.status(400).send('URL required');
 
-      const parsed = new URL(audioUrl);
-      if (parsed.protocol !== 'https:' || !/(\.|^)apple\.com$/i.test(parsed.hostname) && !/itunes\.apple\.com$/i.test(parsed.hostname) && !/mzstatic\.com$/i.test(parsed.hostname)) {
-        return res.status(400).send('Only Apple audio preview URLs are allowed');
+      const headers: Record<string, string> = {};
+      if (req.headers.range) {
+        headers['Range'] = req.headers.range as string;
       }
 
-      const headers: Record<string, string> = {
-        'User-Agent': 'ZTune/1.0 (music preview)',
-        'Accept': 'audio/mpeg,audio/*;q=0.9,*/*;q=0.5',
-      };
-      if (req.headers.range) headers['Range'] = String(req.headers.range);
-
-      const audioRes = await fetchWithTimeout(audioUrl, { headers }, 15000);
-      if (!audioRes.ok && audioRes.status !== 206) {
+      const audioRes = await fetch(audioUrl, { headers });
+      if (!audioRes.ok) {
         return res.status(audioRes.status).send('Audio fetch failed');
       }
 
-      const contentType = audioRes.headers.get('content-type') || 'audio/mpeg';
-      const buffer = Buffer.from(await audioRes.arrayBuffer());
-
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Accept-Ranges', 'bytes');
-      res.setHeader('Content-Type', contentType);
-      if (audioRes.headers.get('content-range')) {
-        res.status(206);
-        res.setHeader('Content-Range', audioRes.headers.get('content-range')!);
+      res.setHeader('Content-Type', audioRes.headers.get('content-type') || 'audio/mpeg');
+      if (audioRes.headers.get('content-length')) {
+        res.setHeader('Content-Length', audioRes.headers.get('content-length')!);
       }
-      res.setHeader('Content-Length', String(buffer.length));
-      return res.end(buffer);
+      if (audioRes.headers.get('content-range')) {
+        res.setHeader('Content-Range', audioRes.headers.get('content-range')!);
+        res.status(206);
+      }
+
+      // iTunes previews are short files; buffering them avoids stream/Range
+      // incompatibilities that can occur in serverless runtimes.
+      const arrayBuffer = await audioRes.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
     } catch (err: any) {
       console.error('Audio proxy error:', err);
-      return res.status(502).send(err?.name === 'AbortError' ? 'Audio source timed out' : (err?.message || 'Audio proxy failed'));
+      res.status(500).send(err.message);
     }
   });
 
@@ -426,15 +430,10 @@ export function createApiApp(): Express {
 
       if (!q) return res.status(400).json({ error: 'Query parameters required' });
 
-      const url = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&entity=song&limit=3&country=US`;
-      const response = await fetchWithTimeout(url, {
-        headers: {
-          'Accept': 'application/json',
-          'User-Agent': 'ZTune/1.0 (music preview lookup)',
-        },
-      }, 10000);
+      const url = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&entity=song&limit=3`;
+      const response = await fetch(url);
       if (!response.ok) {
-        return res.status(502).json({ error: `iTunes API returned HTTP ${response.status}` });
+        return res.status(500).json({ error: 'iTunes API fetch failed' });
       }
       const data = await response.json();
       const result = data.results && data.results[0];
@@ -584,7 +583,7 @@ Return pure JSON:
           if (tracks.length >= count) break;
           try {
             const query = `${song.title} ${song.artist} audio`;
-            const searchResult = await searchYouTube(query);
+            const searchResult = { videos: await searchYouTube(query) };
             const video = (searchResult.videos || [])[0];
 
             if (video && !seenIds.has(`yt_${video.videoId}`) && !seenIds.has(video.videoId)) {
@@ -626,7 +625,7 @@ Return pure JSON:
         for (const q of fallbackQueries) {
           if (tracks.length >= count) break;
           try {
-            const searchResult = await searchYouTube(q);
+            const searchResult = { videos: await searchYouTube(q) };
             const videos = (searchResult.videos || []).slice(0, 10);
             for (const video of videos) {
               if (tracks.length >= count) break;
@@ -707,39 +706,26 @@ Return pure JSON:
     });
   });
 
-  // Helper endpoint to proxy images with CORS headers so canvas extraction never gets blocked.
+  // Helper endpoint to proxy images with CORS headers so canvas extraction never gets blocked
   app.get('/api/image/proxy', async (req: Request, res: Response) => {
     try {
       const imageUrl = String(req.query.url || '');
       if (!imageUrl) return res.status(400).send('URL required');
 
-      const parsed = new URL(imageUrl);
-      if (parsed.protocol !== 'https:') {
-        return res.status(400).send('Only HTTPS image URLs are allowed');
-      }
-
-      const imageRes = await fetchWithTimeout(imageUrl, {
-        headers: {
-          'Accept': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
-          'Referer': parsed.hostname.includes('youtube') || parsed.hostname.includes('ytimg') ? 'https://www.youtube.com/' : undefined as any,
-        },
-      }, 10000);
-
+      const imageRes = await fetch(imageUrl);
       if (!imageRes.ok) {
-        return res.status(imageRes.status).send(`Image fetch failed (${imageRes.status})`);
+        return res.status(imageRes.status).send('Image fetch failed');
       }
-
-      const contentType = imageRes.headers.get('content-type') || 'image/jpeg';
-      const buffer = Buffer.from(await imageRes.arrayBuffer());
 
       res.setHeader('Access-Control-Allow-Origin', '*');
-      res.setHeader('Cache-Control', 'public, s-maxage=86400, max-age=86400');
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Content-Length', String(buffer.length));
-      return res.end(buffer);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.setHeader('Content-Type', imageRes.headers.get('content-type') || 'image/jpeg');
+
+      const arrayBuffer = await imageRes.arrayBuffer();
+      res.send(Buffer.from(arrayBuffer));
     } catch (err: any) {
       console.error('Image proxy error:', err);
-      return res.status(502).send(err?.name === 'AbortError' ? 'Image source timed out' : (err?.message || 'Image proxy failed'));
+      res.status(500).send(err.message);
     }
   });
 
