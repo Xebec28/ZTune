@@ -6,7 +6,8 @@
 import express, { Express, Request, Response } from 'express';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
-import { DEFAULT_TRACKS } from '../data/defaultCatalog';
+import { DEFAULT_TRACKS } from '../data/defaultCatalog.js';
+// import ... from '../data/defaultCatalog.js';
 
 dotenv.config();
 

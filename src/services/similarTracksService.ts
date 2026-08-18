@@ -4,7 +4,7 @@
  */
 
 import { Track } from '../types';
-import { DEFAULT_TRACKS } from '../data/defaultCatalog';
+import { DEFAULT_TRACKS } from '../data/defaultCatalog.js';
 
 export interface SimilarTracksResult {
   tracks: Track[];

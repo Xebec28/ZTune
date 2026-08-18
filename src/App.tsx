@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { DEFAULT_CATALOG } from './data/defaultCatalog';
+import { DEFAULT_CATALOG } from './data/defaultCatalog.js';
 import { Track, Playlist, Artist, NavigationTab, DynamicThemeColors } from './types';
 import { audioEngine } from './services/audioEngine';
 import { LeftSidebar } from './components/LeftSidebar';
