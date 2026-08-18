@@ -1,0 +1,92 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="100%" height="100%">
+  <rect width="512" height="512" fill="#0a0a0e"/>
+  
+  <!-- Outer glow effect -->
+  <defs>
+    <filter id="subtle-glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="blur" />
+      <feComposite in="SourceGraphic" in2="blur" operator="over" />
+    </filter>
+  </defs>
+
+  <g filter="url(#subtle-glow)">
+    <!-- Headphone Headband Arch -->
+    <path 
+      d="M 148 310 L 148 235 C 148 190 180 156 215 156 L 297 156 C 332 156 364 190 364 235 L 364 310" 
+      fill="none" 
+      stroke="#ffffff" 
+      stroke-width="26" 
+      stroke-linecap="round" 
+      stroke-linejoin="round"
+    />
+
+    <!-- Left Ear Cup -->
+    <rect x="108" y="228" width="28" height="78" rx="14" fill="#ffffff" />
+
+    <!-- Right Ear Cup -->
+    <rect x="376" y="228" width="28" height="78" rx="14" fill="#ffffff" />
+
+    <!-- Main Skull Head Shape -->
+    <!-- Drawn as a single solid polygon with cutouts using fill-rule evenodd -->
+    <path
+      fill="#ffffff"
+      fill-rule="evenodd"
+      d="
+        M 195 180
+        L 317 180
+        C 345 180 348 200 348 220
+        L 348 322
+        L 326 348
+        L 300 324
+        L 286 358
+        L 276 358
+        L 276 346
+        L 266 346
+        L 266 358
+        L 246 358
+        L 246 346
+        L 236 346
+        L 236 358
+        L 226 358
+        L 212 324
+        L 186 348
+        L 164 322
+        L 164 220
+        C 164 200 167 180 195 180
+        Z
+
+        /* Left Eye Cutout */
+        M 172 254
+        L 226 276
+        L 222 294
+        L 172 272
+        Z
+
+        /* Right Eye Cutout */
+        M 340 254
+        L 286 276
+        L 290 294
+        L 340 272
+        Z
+
+        /* Center Nose Cutout */
+        M 256 288
+        L 242 320
+        L 270 320
+        Z
+
+        /* Cheek Left Cut */
+        M 178 316
+        L 196 316
+        L 187 325
+        Z
+
+        /* Cheek Right Cut */
+        M 334 316
+        L 316 316
+        L 325 325
+        Z
+      "
+    />
+  </g>
+</svg>

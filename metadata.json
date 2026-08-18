@@ -1,0 +1,6 @@
+{
+  "name": "ZTune Desktop",
+  "description": "ZTune Desktop music player with real-time audio visualizer, 10-band DSP equalizer, dynamic ambient album artwork themes, playlist management, and local file import.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
