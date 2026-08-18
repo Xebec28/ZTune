@@ -89,41 +89,125 @@ async function fetchJsonWithTimeout(url: string, init: RequestInit = {}, timeout
   }
 }
 
-async function searchYouTube(query: string): Promise<YouTubeSearchVideo[]> {
-  const encoded = encodeURIComponent(query.trim());
-  const url = `https://www.youtube.com/results?search_query=${encoded}`;
+function extractBalancedJsonAfterMarker(text: string, marker: string): any | null {
+  const markerIndex = text.indexOf(marker);
+  if (markerIndex < 0) return null;
 
-  try {
-    const response = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
-        'Accept-Language': 'en-US,en;q=0.9',
-        'Accept': 'text/html,application/xhtml+xml',
-      },
-    });
+  const start = text.indexOf('{', markerIndex + marker.length);
+  if (start < 0) return null;
 
-    if (!response.ok) throw new Error(`YouTube search HTTP ${response.status}`);
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
 
-    const html = await response.text();
-    const patterns = [
-      /var ytInitialData = (\{.*?\});<\/script>/s,
-      /ytInitialData"\s*:\s*(\{.*?\})\s*,\s*"ytInitialPlayerResponse"/s,
-      /ytInitialData\s*=\s*(\{.*?\});/s,
-    ];
+  for (let i = start; i < text.length; i++) {
+    const ch = text[i];
 
-    for (const pattern of patterns) {
-      const match = html.match(pattern);
-      if (!match?.[1]) continue;
-      try {
-        const data = JSON.parse(match[1]);
-        const videos = collectYouTubeVideos(data);
-        if (videos.length) return videos;
-      } catch {
-        // Try the next extraction pattern.
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (ch === '\\') {
+        escaped = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === '"') {
+      inString = true;
+      continue;
+    }
+
+    if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1));
+        } catch {
+          return null;
+        }
       }
     }
-  } catch (error: any) {
-    console.warn('YouTube web search failed:', error?.message || error);
+  }
+
+  return null;
+}
+
+async function searchITunes(query: string, limit = 8): Promise<any[]> {
+  try {
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(query)}&media=music&entity=song&limit=${limit}`;
+    const response = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+    });
+    if (!response.ok) return [];
+
+    const data = await response.json();
+    return (data.results || [])
+      .filter((r: any) => r.trackName && r.artistName)
+      .map((r: any) => ({
+        id: `itunes_${r.trackId}`,
+        title: r.trackName,
+        artist: r.artistName,
+        album: r.collectionName || 'Music',
+        duration: Math.round((r.trackTimeMillis || 210000) / 1000),
+        artworkUrl: String(r.artworkUrl100 || '').replace('100x100bb', '600x600bb'),
+        audioUrl: r.previewUrl || '',
+        genre: r.primaryGenreName || 'Music',
+        rating: 5,
+        isFavorite: false,
+        source: 'iTunes',
+        previewUrl: r.previewUrl || '',
+        collectionUrl: r.collectionViewUrl || '',
+      }));
+  } catch (err: any) {
+    console.warn('iTunes search failed:', err?.message || err);
+    return [];
+  }
+}
+
+async function searchYouTube(query: string): Promise<YouTubeSearchVideo[]> {
+  const queries = Array.from(new Set([
+    query.trim(),
+    `${query.trim()} official audio`,
+  ].filter(Boolean)));
+
+  for (const q of queries) {
+    const encoded = encodeURIComponent(q);
+    const url = `https://www.youtube.com/results?search_query=${encoded}`;
+
+    try {
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131 Safari/537.36',
+          'Accept-Language': 'en-US,en;q=0.9',
+          'Accept': 'text/html,application/xhtml+xml',
+        },
+      });
+
+      if (!response.ok) throw new Error(`YouTube search HTTP ${response.status}`);
+
+      const html = await response.text();
+
+      // YouTube embeds the search data as a large JSON object. Regex is
+      // unreliable here because the object contains many nested braces.
+      const markers = [
+        'var ytInitialData =',
+        'ytInitialData =',
+        '"ytInitialData":',
+      ];
+
+      for (const marker of markers) {
+        const data = extractBalancedJsonAfterMarker(html, marker);
+        if (!data) continue;
+
+        const videos = collectYouTubeVideos(data);
+        if (videos.length) return videos;
+      }
+    } catch (error: any) {
+      console.warn(`YouTube web search failed for "${q}":`, error?.message || error);
+    }
   }
 
   return [];
@@ -159,16 +243,39 @@ function localCatalogSearch(query: string): any[] {
   const normalized = query.toLowerCase().trim();
   if (!normalized) return [];
 
-  const terms = normalized.split(/\s+/).filter(Boolean);
+  // Ignore one-letter terms (e.g. "i guess") so they don't produce
+  // unrelated catalog matches simply because the letter appears in a song.
+  const terms = normalized.split(/\s+/).filter((term) => term.length >= 2);
+  if (!terms.length) return [];
 
   return DEFAULT_TRACKS
     .map((track: any) => {
-      const haystack = `${track.title} ${track.artist} ${track.album} ${track.genre}`.toLowerCase();
-      const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0);
-      return { track, score };
+      const title = String(track.title || '').toLowerCase();
+      const artist = String(track.artist || '').toLowerCase();
+      const album = String(track.album || '').toLowerCase();
+      const genre = String(track.genre || '').toLowerCase();
+      const haystack = `${title} ${artist} ${album} ${genre}`;
+
+      let score = 0;
+      if (title === normalized) score += 100;
+      if (title.includes(normalized)) score += 60;
+      if (artist.includes(normalized)) score += 40;
+
+      for (const term of terms) {
+        if (title.includes(term)) score += 20;
+        else if (artist.includes(term)) score += 15;
+        else if (album.includes(term)) score += 5;
+        else if (genre.includes(term)) score += 3;
+      }
+
+      // Require at least one meaningful match.
+      const matchedTerms = terms.filter((term) => haystack.includes(term)).length;
+      if (matchedTerms === 0) score = 0;
+
+      return { track, score, matchedTerms };
     })
     .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
+    .sort((a, b) => b.score - a.score || b.matchedTerms - a.matchedTerms)
     .slice(0, 8)
     .map(({ track }) => ({ ...track }));
 }
@@ -245,52 +352,64 @@ export function createApiApp(): Express {
   // Uses the public YouTube search page instead of yt-search because yt-search
   // is unreliable inside Vercel serverless functions.
   app.get('/api/search', async (req: Request, res: Response) => {
+    const rawQuery = String(req.query.q || '').trim();
+    const limit = Math.min(Math.max(Number(req.query.limit) || 8, 1), 20);
+
     try {
-      const rawQuery = String(req.query.q || '').trim();
       if (!rawQuery) return res.json({ tracks: [] });
 
-      // Always search the app's built-in catalog first. This makes the
-      // bundled tracks work even if an external search provider is unavailable.
-      const localTracks = localCatalogSearch(rawQuery);
-      if (localTracks.length > 0) {
-        return res.json({ tracks: localTracks });
+      // Search the external catalog first so arbitrary songs work in production.
+      const videos = (await searchYouTube(rawQuery)).slice(0, limit);
+
+      if (videos.length > 0) {
+        const tracks = videos.map((v: YouTubeSearchVideo, index: number) => {
+          const cleanTitle = (v.title || '')
+            .replace(/[\(\[\{](Official Music Video|Official Audio|Lyric Video|Audio|MV|HD|4K|Topic)[\)\]\}]/gi, '')
+            .trim();
+
+          const candidateIds = [
+            v.videoId,
+            ...videos
+              .map((candidate) => candidate.videoId)
+              .filter((id) => id && id !== v.videoId)
+              .slice(0, 7),
+          ];
+
+          return {
+            id: `yt_${v.videoId || index}`,
+            youtubeId: v.videoId,
+            candidateIds,
+            title: cleanTitle || v.title,
+            artist: v.author?.name || 'Artist',
+            album: 'YouTube Music',
+            duration: v.seconds || 210,
+            artworkUrl: v.thumbnail || v.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80',
+            audioUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
+            genre: 'Music',
+            rating: 5,
+            isFavorite: false,
+            source: 'YouTube',
+          };
+        });
+
+        return res.json({ tracks });
       }
 
-      const videos = (await searchYouTube(`${rawQuery} audio`)).slice(0, 30);
-      const tracks = videos.map((v: YouTubeSearchVideo, index: number) => {
-        const cleanTitle = (v.title || '')
-          .replace(/[\(\[\{](Official Music Video|Official Audio|Lyric Video|Audio|MV|HD|4K|Topic)[\)\]\}]/gi, '')
-          .trim();
+      // If YouTube is unavailable in the serverless environment, use Apple's
+      // public iTunes Search API so arbitrary music searches still return
+      // real matching songs and a playable 30-second preview.
+      const iTunesTracks = await searchITunes(rawQuery, limit);
+      if (iTunesTracks.length > 0) {
+        return res.json({ tracks: iTunesTracks });
+      }
 
-        const candidateIds = [
-          v.videoId,
-          ...videos
-            .map((candidate) => candidate.videoId)
-            .filter((id) => id && id !== v.videoId)
-            .slice(0, 4),
-        ];
-
-        return {
-          id: `yt_${v.videoId || index}`,
-          youtubeId: v.videoId,
-          candidateIds,
-          title: cleanTitle || v.title,
-          artist: v.author?.name || 'Artist',
-          album: 'YouTube Music',
-          duration: v.seconds || 210,
-          artworkUrl: v.thumbnail || v.image || 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=600&auto=format&fit=crop&q=80',
-          audioUrl: `https://www.youtube.com/watch?v=${v.videoId}`,
-          genre: 'Music',
-          rating: 5,
-          isFavorite: false,
-          source: 'YouTube',
-        };
-      });
-
-      return res.json({ tracks });
+      // Last fallback: only return bundled tracks that actually match.
+      const localTracks = localCatalogSearch(rawQuery);
+      return res.json({ tracks: localTracks });
     } catch (err: any) {
-      console.error('YouTube search error:', err);
-      return res.json({ tracks: [] });
+      console.error('Search error:', err);
+      const fallback = await searchITunes(String(req.query.q || ''), limit);
+      return res.json({ tracks: fallback.length ? fallback : localCatalogSearch(String(req.query.q || '')) });
     }
   });
 

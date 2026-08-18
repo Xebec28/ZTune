@@ -324,7 +324,25 @@ class AudioEngineService {
       return;
     }
 
-    // 2. Full-length YouTube Track handler
+    // 2. Direct preview track (for iTunes fallback search results)
+    // These are browser-playable HTTPS MP4/AAC previews and do not require
+    // the YouTube iframe.
+    if (track.audioUrl && /^https:\/\//i.test(track.audioUrl) &&
+        (track.source === 'iTunes' || track.previewUrl)) {
+      this.clearPlaybackWatchdog();
+      this.activeEngine = 'html5';
+      if (this.ytPlayer && typeof this.ytPlayer.pauseVideo === 'function') {
+        try { this.ytPlayer.pauseVideo(); } catch (e) {}
+      }
+      this.audio.src = track.audioUrl;
+      this.audio.currentTime = 0;
+      this.audio.volume = this.volume;
+      this.audio.load();
+      this.notifyListeners();
+      return;
+    }
+
+    // 3. Full-length YouTube Track handler
     this.activeEngine = 'youtube';
     try {
       this.audio.pause();
