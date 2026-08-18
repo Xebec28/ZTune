@@ -1,20 +1,110 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# 🎵 ZTune
 
-# Run and deploy your AI Studio app
+<p align="center">
+  <strong>A modern desktop music experience</strong>
+</p>
 
-This contains everything you need to run your app locally.
+<p align="center">
+  <a href="https://z-tune.vercel.app">
+    <img src="https://img.shields.io/badge/Live%20Demo-ZTune-black?style=for-the-badge" alt="Live Demo">
+  </a>
+</p>
 
-View your app in AI Studio: https://ai.studio/apps/438ae0f6-c3e6-4873-b7a7-4493a8450b0c
+---
 
-## Run Locally
+## 📸 Preview
 
-**Prerequisites:**  Node.js
+> Add the ZTune application screenshot here.
 
+<p align="center">
+  <img src="./assets/screenshot.png" alt="ZTune Desktop Screenshot" width="900">
+</p>
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+---
+
+## 🖤 Logo
+
+<p align="center">
+  <img src="./assets/logo.png" alt="ZTune Logo" width="120">
+</p>
+
+---
+
+## 🎧 About
+
+**ZTune** is a modern music application designed with a clean, immersive desktop-style interface for discovering and enjoying music.
+
+The application focuses on a sleek visual experience with a music-first interface and a contemporary design inspired by modern streaming platforms.
+
+---
+
+## ✨ Features
+
+* 🎵 Modern music-player interface
+* 🖥️ Desktop-focused user experience
+* 🎨 Clean and elegant visual design
+* 🎧 Music discovery and playback experience
+* ⚡ Fast, responsive web interface
+* 📱 Responsive layout
+* 🌐 Accessible directly from the browser
+
+---
+
+## 🚀 Live App
+
+Experience ZTune here:
+
+**[Open ZTune →](https://z-tune.vercel.app)**
+
+---
+
+## 🛠️ Tech Stack
+
+The deployed application is hosted using **Vercel**.
+
+> Add the exact frontend framework, libraries, APIs, and other technologies here once the source repository is available.
+
+---
+
+## 📂 Assets
+
+Recommended project structure:
+
+```text
+ZTune/
+├── assets/
+│   ├── logo.png
+│   └── screenshot.png
+├── src/
+├── public/
+├── package.json
+└── README.md
+```
+
+---
+
+## 🎯 Project
+
+ZTune is built to provide a polished, modern music experience through a minimal and visually focused interface.
+
+---
+
+## 🔗 Links
+
+| Resource      | Link                                           |
+| ------------- | ---------------------------------------------- |
+| 🎵 Live App   | [z-tune.vercel.app](https://z-tune.vercel.app) |
+| 📸 Screenshot | `./assets/screenshot.png`                      |
+| 🖤 Logo       | `./assets/logo.png`                            |
+
+---
+
+## 📄 License
+
+Add your preferred license here.
+
+---
+
+<p align="center">
+  Made with ❤️ for music lovers.
+</p>
